@@ -1,0 +1,36 @@
+# --- 사용자 분석 자료 (회사명 = 관심사 노출, 재생성 가능) ---
+_input/raw/
+_workspace/
+output/
+
+# 레거시 경로
+data/
+
+# 회사별 가정·매핑 (개별 사용자 결정 이력은 비공개로)
+.claude/skills/dart-pipeline/references/assumptions/*/
+
+# 작업 노트 (일회성 정보 포함 가능)
+.claude/memory.md
+
+# --- 표준 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 비밀
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
