@@ -239,6 +239,24 @@ def extract_financials(pdf_path: str | Path, verbose: bool = False) -> dict:
         # 2) 메타 정보
         result["meta"] = extract_meta(pages_text, pdf_name=pdf_path.name)
 
+        # 2-1) 스캔본/파싱실패 조기 감지 — 예외로 터뜨리지 않고 경고만 기록.
+        # 재무제표 PDF는 표가 반드시 있어야 하므로 '표 0개'는 거의 확정적 신호.
+        # 표지페이지(텍스트 적음) 오탐을 피하려고 문서 전체 신호를 복합 판정한다.
+        n_pages = len(pages_text)
+        total_chars = sum(len(t.strip()) for t in pages_text)
+        doc_tables = sum(len(tb) for tb in pages_tables)
+        avg_chars = total_chars / max(1, n_pages)
+        warnings: list[str] = []
+        if total_chars < 100 or (doc_tables == 0 and avg_chars < 50):
+            warnings.append("이미지 스캔본 PDF로 추정됨 (텍스트·표 거의 미검출, OCR 필요)")
+        elif doc_tables == 0:
+            warnings.append("표가 전혀 감지되지 않음 (비표준 양식 또는 스캔본 가능성, 확인 필요)")
+        result["_warnings"] = warnings
+        result["meta"]["추출경고"] = "; ".join(warnings) if warnings else None
+        if warnings and verbose:
+            for w in warnings:
+                print(f"  [WARNING] {pdf_path.name}: {w}")
+
         # 3) 섹션 경계 탐지
         # 페이지마다 첫 줄 제목 확인 → 섹션 시작 페이지 마킹
         section_starts = []  # [(page_idx, section_name)]
@@ -346,6 +364,8 @@ def _process_one(pdf: Path, out_dir: Optional[Path] = None, verbose: bool = True
         return None
     found = [n for n in ["재무상태표", "포괄손익계산서", "자본변동표", "현금흐름표"] if fs.get(n) is not None]
     print(f"  추출 섹션: {found}")
+    for w in fs.get("_warnings", []):
+        print(f"  [WARNING] {w}")
     if verbose:
         for n in found:
             df = fs[n]

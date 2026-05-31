@@ -12,6 +12,9 @@ data/
 # 작업 노트 (일회성 정보 포함 가능)
 .claude/memory.md
 
+# 스크리너 DB (재생성 가능, 회사 관심사 노출)
+screener.db
+
 # --- 표준 ---
 __pycache__/
 *.py[cod]

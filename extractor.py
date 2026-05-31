@@ -44,6 +44,24 @@ HARNESS_WORKSPACE = HERE / "_workspace"
 HARNESS_OUTPUT = HERE / "output"
 
 
+def _load_dotenv(path: Path) -> None:
+    """프로젝트 .env 를 환경변수로 로드. 의존성 없음.
+
+    DART_API_KEY 같은 비밀을 매 세션 다시 넣지 않도록 영구 보관용.
+    이미 환경에 설정된 키는 덮어쓰지 않는다(명시적 export/`--key` 우선).
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
 # ---------- 사용자 선택 ----------
 
 def _choose_company(cands: list[dict], keyword: str) -> dict | None:
@@ -183,6 +201,8 @@ def run_pipeline(
             pdf_to_excel.save_excel(fs, out)
             found = [n for n in ("재무상태표", "포괄손익계산서", "자본변동표", "현금흐름표") if fs.get(n) is not None]
             print(f"      ✓ {out.name}  ({len(found)}/4 시트)")
+            for w in fs.get("_warnings", []):
+                print(f"      [WARNING] {pdf.name}: {w}")
         except Exception as e:
             print(f"      [에러] {pdf.name}: {e}")
 
@@ -190,59 +210,36 @@ def run_pipeline(
     print(f"[6/6] 시계열 통합 → {out_xlsx.name}")
     consolidate.run(excel_dir, out_xlsx, default_company=target["corp_name"])
 
-    # 회계등식 자동 검증
-    _verify_accounting(out_xlsx)
+    # 회계등식 자동 검증 + 검증_Report 시트 주입
+    log_dir = (HARNESS_WORKSPACE / company_safe / "logs") if harness else (out_xlsx.parent / "logs")
+    _verify_accounting(out_xlsx, log_dir)
 
     return out_xlsx
 
 
-def _verify_accounting(xlsx_path: Path):
-    """자산=부채+자본, 매출=원가+매출총이익 자동 검증."""
+def _verify_accounting(xlsx_path: Path, log_dir: Path | None = None):
+    """검증은 결정적 asset(validate.py)에 위임한다 (헌법: 결정성 분리).
+
+    여기서 BS/IS 등식을 다시 계산하지 않는다 — validate.py를 호출만 한다.
+    검증 결과는 콘솔 출력 + '검증_Report' 시트 주입 + JSON 로그로 남긴다.
+    """
+    assets = HERE / ".claude" / "skills" / "dart-pipeline" / "assets"
+    if str(assets) not in sys.path:
+        sys.path.insert(0, str(assets))
     try:
-        import openpyxl
-    except ImportError:
+        import validate as fs_validate
+    except Exception as e:
+        print(f"\n[검증 스킵] validate.py 로드 실패: {e}")
         return
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
-    print(f"\n[검증] {xlsx_path.name}")
-
-    for sn in ("별도_재무상태표", "연결_재무상태표"):
-        if sn not in wb.sheetnames:
-            continue
-        ws = wb[sn]
-        rows = list(ws.iter_rows(values_only=True))
-        header = rows[0]
-        data = {r[0]: r[1:] for r in rows[1:]}
-        ok = 0; warn = []
-        for i, year in enumerate(header[1:]):
-            a = data.get("자산총계", [None])[i]
-            l = data.get("부채총계", [None])[i]
-            e = data.get("자본총계", [None])[i]
-            if a and l and e and abs(a - l - e) < 100:
-                ok += 1
-            elif a and l and e:
-                warn.append(f"{year}: diff={a-l-e:,}")
-        print(f"   {sn}: BS등식 {ok}/{len(header)-1} ✓  {('|'.join(warn)) if warn else ''}")
-
-    for sn in ("별도_포괄손익계산서", "연결_포괄손익계산서"):
-        if sn not in wb.sheetnames:
-            continue
-        ws = wb[sn]
-        rows = list(ws.iter_rows(values_only=True))
-        header = rows[0]
-        data = {r[0]: r[1:] for r in rows[1:]}
-        ok = 0; missing = []
-        for i, year in enumerate(header[1:]):
-            s = data.get("매출액", [None])[i]
-            c = data.get("매출원가", [None])[i]
-            g = data.get("매출총이익", [None])[i]
-            if s and c and g and abs(s - c - g) < 100:
-                ok += 1
-            elif not (s and c and g):
-                missing.append(str(year))
-        msg = f"   {sn}: IS등식 {ok}/{len(header)-1} ✓"
-        if missing:
-            msg += f"  (일부누락: {', '.join(missing)})"
-        print(msg)
+    print(f"\n[검증] {Path(xlsx_path).name}")
+    try:
+        rep = fs_validate.validate_and_embed(xlsx_path, log_dir=log_dir)
+    except Exception as e:
+        print(f"[검증 실패] {e}")
+        return
+    fs_validate.print_report(rep)
+    if log_dir:
+        print(f"   검증_Report 시트 주입 완료 · 로그: {log_dir}")
 
 
 # ---------- CLI ----------
@@ -263,9 +260,10 @@ def main(argv: list[str]):
                    help="하네스 경로 사용 (_input/raw/, _workspace/, output/YYYY-MM/). 기본은 data/ 레거시 경로.")
     args = p.parse_args(argv[1:])
 
+    _load_dotenv(HERE / ".env")
     api_key = (args.key or os.environ.get("DART_API_KEY", "")).strip()
     if not api_key:
-        print("[!] DART API 키가 필요합니다. --key 또는 환경변수 DART_API_KEY 로 전달하세요.")
+        print("[!] DART API 키가 필요합니다. .env(DART_API_KEY=...) 또는 --key/환경변수로 전달하세요.")
         print("    https://opendart.fss.or.kr 에서 무료 발급.")
         sys.exit(1)
 

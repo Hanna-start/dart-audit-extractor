@@ -34,9 +34,18 @@ if __name__ == "__main__":
             pass
 
 import openpyxl
+from openpyxl.styles import PatternFill, Font
 
 
 TOL = 100   # 100원 미만 차이는 반올림 노이즈로 간주
+
+# 검증_Report 시트 셀 색상/라벨 (severity → 표현)
+SEV_FILL = {
+    "ok":   PatternFill("solid", fgColor="C6EFCE"),   # 초록
+    "warn": PatternFill("solid", fgColor="FFEB9C"),   # 노랑
+    "fail": PatternFill("solid", fgColor="FFC7CE"),   # 빨강
+}
+SEV_LABEL = {"ok": "✓ 일치", "warn": "△ 확인필요", "fail": "✗ 불일치"}
 
 
 @dataclass
@@ -149,6 +158,77 @@ def validate(xlsx_path: Path) -> Report:
     return rep
 
 
+def render_report_sheet(rep: Report, xlsx_path: Path, sheet_name: str = "검증_Report") -> Path:
+    """검증 결과(Report)를 같은 xlsx 파일에 "검증_Report" 시트로 주입한다.
+
+    - 이미 시트가 있으면 교체 (재실행 안전).
+    - 시트는 맨 앞에 배치 → 파일을 열면 정합성이 가장 먼저 보임.
+    - 결과 셀은 severity별로 색칠(초록/노랑/빨강).
+
+    결정성 분리: 이 함수는 validate()가 산출한 Report만 렌더링한다. 숫자를 새로
+    계산하지 않는다.
+    """
+    xlsx_path = Path(xlsx_path)
+    # 값만 들어있는 pandas 산출물이라 data_only=False로 열어도 값이 보존된다.
+    wb = openpyxl.load_workbook(xlsx_path)
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
+    ws = wb.create_sheet(sheet_name, 0)
+
+    # 1) 요약 헤더
+    ws["A1"] = "검증 요약"
+    ws["A1"].font = Font(bold=True, size=12)
+    ws["B1"] = (f"통과 {rep.summary.get('ok', 0)} · "
+                f"경고 {rep.summary.get('warn', 0)} · "
+                f"실패 {rep.summary.get('fail', 0)}")
+    ws["B1"].fill = SEV_FILL["fail"] if rep.summary.get("fail", 0) else SEV_FILL["ok"]
+    ws["E1"] = f"검증일 {rep.checked_at}"
+
+    # 2) 표 헤더
+    hdr = ["재무제표", "연도", "검사", "결과", "상세"]
+    head_row = 3
+    head_fill = PatternFill("solid", fgColor="D9D9D9")
+    for j, h in enumerate(hdr):
+        c = ws.cell(row=head_row, column=1 + j, value=h)
+        c.font = Font(bold=True)
+        c.fill = head_fill
+
+    # 3) 이슈 행: 실패 → 경고 → 통과 순으로 정렬해 중요한 게 위로
+    order = {"fail": 0, "warn": 1, "ok": 2}
+    issues = sorted(
+        rep.issues,
+        key=lambda i: (order.get(i.severity, 9), str(i.sheet), str(i.year)),
+    )
+    r = head_row + 1
+    for it in issues:
+        ws.cell(row=r, column=1, value=it.sheet)
+        ws.cell(row=r, column=2, value=it.year)
+        ws.cell(row=r, column=3, value=it.check)
+        rc = ws.cell(row=r, column=4, value=SEV_LABEL.get(it.severity, it.severity))
+        rc.fill = SEV_FILL.get(it.severity, PatternFill())
+        ws.cell(row=r, column=5, value=it.detail)
+        r += 1
+
+    for col, width in zip("ABCDE", (22, 8, 10, 12, 64)):
+        ws.column_dimensions[col].width = width
+
+    wb.save(xlsx_path)
+    return xlsx_path
+
+
+def validate_and_embed(xlsx_path: Path, log_dir: Path | None = None) -> Report:
+    """검증 → 검증_Report 시트 주입 → (선택) JSON 로그 저장을 한 번에.
+
+    산출 경로(build_timeseries/extractor)가 호출하는 단일 진입점.
+    """
+    xlsx_path = Path(xlsx_path)
+    rep = validate(xlsx_path)
+    render_report_sheet(rep, xlsx_path)
+    if log_dir is not None:
+        write_log(rep, Path(log_dir))
+    return rep
+
+
 def print_report(rep: Report):
     print(f"[검증] {rep.file}")
     print(f"        통과 {rep.summary['ok']} / 경고 {rep.summary['warn']} / 실패 {rep.summary['fail']}")
@@ -176,6 +256,8 @@ def main(argv: list[str]):
     p = argparse.ArgumentParser(description="시계열 Excel 무결성 검증")
     p.add_argument("xlsx", help="검증할 시계열 Excel 경로")
     p.add_argument("--log", help="로그 디렉토리 (지정 시 JSON 로그 저장)")
+    p.add_argument("--embed", action="store_true",
+                   help="검증 결과를 같은 xlsx에 '검증_Report' 시트로 주입")
     args = p.parse_args(argv[1:])
 
     xlsx_path = Path(args.xlsx)
@@ -191,9 +273,13 @@ def main(argv: list[str]):
 
     print_report(rep)
 
+    if args.embed:
+        render_report_sheet(rep, xlsx_path)
+        print(f"\n검증_Report 시트 주입: {xlsx_path}")
+
     if args.log:
         log_path = write_log(rep, Path(args.log))
-        print(f"\n로그 저장: {log_path}")
+        print(f"로그 저장: {log_path}")
 
     sys.exit(1 if rep.summary["fail"] > 0 else 0)
 
