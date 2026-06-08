@@ -23,6 +23,7 @@ import json
 import sys
 import time
 from datetime import date
+from pathlib import Path
 
 import requests
 
@@ -173,17 +174,20 @@ def main(argv):
                     help="수동 지정(미지정 시 자동: 오늘 기준 공시 마감 지난 모든 분기)")
     ap.add_argument("--recheck-empty", action="store_true",
                     help="empty로 기록된 것도 다시 시도(지각 공시 보완; 평소엔 불필요)")
-    ap.add_argument("--limit", type=int, default=0, help="kospi_index 앞에서 N개만")
+    ap.add_argument("--limit", type=int, default=0, help="명단 앞에서 N개만(시총순)")
+    ap.add_argument("--index", default=None,
+                    help="대상 명단 json 경로(기본: kospi_index.json). 코스닥은 data/kosdaq_index.json")
     ap.add_argument("--key", default="")
     args = ap.parse_args(argv[1:])
 
     key = load_key(args.key)
     if not key:
         print("[!] DART_API_KEY 필요"); sys.exit(1)
-    if not KOSPI_INDEX.exists():
-        print(f"[!] {KOSPI_INDEX} 없음 — 먼저 build_kospi.py 실행"); sys.exit(1)
+    index_path = Path(args.index) if args.index else KOSPI_INDEX
+    if not index_path.exists():
+        print(f"[!] {index_path} 없음 — 먼저 build_*_universe.py 실행"); sys.exit(1)
 
-    corps = json.loads(KOSPI_INDEX.read_text(encoding="utf-8"))
+    corps = json.loads(index_path.read_text(encoding="utf-8"))
     if args.limit:
         corps = corps[:args.limit]
 
@@ -201,7 +205,7 @@ def main(argv):
     print(f"오늘: {today} → 요청 대상은 '공시 마감 지난' 분기만 (미공시 미래분기 제외)")
     print(f"기간 {len(periods)}개 (연도 {yr_span[0]}~{yr_span[-1]}): " +
           ", ".join(f"{y}{REPRT_NM[r]}" for y, r in periods))
-    print(f"분기 수집: 코스피 {len(corps)}개사 × {len(periods)}기간 × 2(CFS/OFS)")
+    print(f"분기 수집: {index_path.stem} {len(corps)}개사 × {len(periods)}기간 × 2(CFS/OFS)")
     print(f"예상 콜 ≈ {len(corps) * len(periods) * 2} (이미 받은 건 체크포인트로 skip)")
     stats = collect(corps, periods, key, conn, recheck_empty=args.recheck_empty)
     conn.close()

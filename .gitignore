@@ -28,6 +28,10 @@ env/
 .env
 .env.*
 !.env.example
+# 금융위 API 탐색(기각) — key.txt 등 비밀 포함
+fsc_finance_api/
+# 수집 로그 아티팩트
+*.log
 
 # OS
 .DS_Store
