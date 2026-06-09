@@ -66,10 +66,12 @@ FLOW_TAGS = {
 }
 EQUITY_TAGS = ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
                "StockholdersEquity"]   # 총자본(지배+비지배) 우선
+RETAINED_TAGS = ["RetainedEarningsAccumulatedDeficit"]   # 이익잉여금(음수자본 원인 판별용)
 REPRT_BY_DUR = {3: "11013", 6: "11012", 9: "11014", 12: "11011"}
 SJ = {"매출액": "손익계산서", "영업이익": "손익계산서", "매출원가": "손익계산서",
       "당기순이익": "손익계산서", "영업활동현금흐름": "현금흐름표",
-      "부채총계": "재무상태표", "자본총계": "재무상태표", "자산총계": "재무상태표"}
+      "부채총계": "재무상태표", "자본총계": "재무상태표", "자산총계": "재무상태표",
+      "이익잉여금": "재무상태표"}
 
 
 def _months(start: str, end: str) -> int:
@@ -154,10 +156,11 @@ def extract_rows(cik10: str) -> list[tuple]:
         if d["year"] is None:              # 연간 미발표(진행중) → end 연도로 추정
             d["year"] = int((max(d["end"].values()) if d["end"] else st)[:4])
 
-    # 2) 시점: 자산·자본·부채(없으면 자산-자본 유도)
+    # 2) 시점: 자산·자본·부채(없으면 자산-자본 유도)·이익잉여금
     assets_at = _instant_map(gaap, ["Assets"])
     equity_at = _instant_map(gaap, EQUITY_TAGS)
     liab_at = _instant_map(gaap, ["Liabilities"])
+    retained_at = _instant_map(gaap, RETAINED_TAGS)
 
     def debt_at(end):
         if end in liab_at:
@@ -184,7 +187,8 @@ def extract_rows(cik10: str) -> list[tuple]:
                     rows.append((year, reprt, SJ[acct], acct, v, v))         # 분기=값_누적(값에도 동일)
             for acct, val in (("자산총계", assets_at.get(enddate)),
                               ("자본총계", equity_at.get(enddate)),
-                              ("부채총계", debt_at(enddate))):
+                              ("부채총계", debt_at(enddate)),
+                              ("이익잉여금", retained_at.get(enddate))):
                 if val is not None:
                     rows.append((year, reprt, SJ[acct], acct, val, None))
     return rows
